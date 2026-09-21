@@ -1,0 +1,41 @@
+[Unit]
+Description=nazar eBPF runtime detection agent
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/nazar-agent
+Environment=NAZAR_RULES=/etc/nazar/rules.toml
+Environment=NAZAR_JSON=1
+Restart=on-failure
+RestartSec=5s
+
+# Loading programs, attaching tracepoints and hooking cgroup/connect.
+# cap_dac_read_search is needed because tracefs is root-only on most
+# distributions; see README.
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_NET_ADMIN CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_NET_ADMIN CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+
+# The agent reads from the kernel and writes nothing but its own output.
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+# cgroup/connect programs attach to /sys/fs/cgroup, so this must stay off.
+ProtectControlGroups=no
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

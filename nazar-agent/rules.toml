@@ -1,0 +1,110 @@
+# nazar detection rules
+#
+# Each rule declares the event kind it applies to and a match block.
+# Within `match`: every condition in `all` must hold, at least one in
+# `any` must hold (when `any` is non-empty), and no condition in `not`
+# may hold.
+#
+# Placeholders available in `message`: {path} {basename} {uid}
+# {dst_ip} {dst_port}, plus {actor} and, for correlated rules,
+# {prior_path} and {delay}.
+
+[[rule]]
+id = "hidden_file_exec"
+severity = "high"
+attack = ["T1564.001"]
+on = "exec"
+message = "executed hidden file {path}"
+[rule.match]
+all = [
+  { field = "basename", op = "prefix", values = ["."] },
+]
+
+[[rule]]
+id = "path_shadowing"
+severity = "high"
+attack = ["T1574.007"]
+on = "exec"
+message = "system command '{basename}' executed from writable {path}"
+[rule.match]
+all = [
+  { field = "path", op = "prefix", values = ["/tmp/", "/var/tmp/", "/dev/shm/", "/home/", "/run/user/"] },
+  { field = "basename", op = "exact", values = [
+      "sh", "bash", "zsh", "dash", "ls", "cat", "cp", "mv", "rm",
+      "ps", "id", "sudo", "su", "git", "curl", "wget", "ssh", "scp",
+      "python", "python3", "perl", "ruby", "node", "npm", "make",
+      "gcc", "systemctl", "crontab", "nc", "ncat", "socat",
+  ] },
+]
+
+[[rule]]
+id = "shell_under_service"
+severity = "critical"
+attack = ["T1059"]
+on = "exec"
+message = "{path} spawned under a network-facing service"
+[rule.match]
+all = [
+  { field = "basename", op = "exact", values = ["sh", "bash", "zsh", "dash", "ash"] },
+  { field = "ancestry_basename", op = "exact", values = [
+      "nginx", "apache2", "httpd", "php-fpm", "postgres", "mysqld",
+      "mariadbd", "redis-server", "tomcat", "java",
+  ] },
+]
+
+[[rule]]
+id = "exec_from_writable_dir"
+severity = "medium"
+attack = ["T1059", "T1204"]
+on = "exec"
+message = "executed {path} from a writable directory"
+[rule.match]
+all = [
+  { field = "path", op = "prefix", values = ["/tmp/", "/var/tmp/", "/dev/shm/", "/run/user/"] },
+]
+
+[[rule]]
+id = "persistence_write"
+severity = "high"
+attack = ["T1543", "T1053", "T1546.004"]
+on = "write"
+message = "{actor} wrote to persistence path {path}"
+[rule.match]
+any = [
+  { field = "path", op = "contains", values = [
+      "/etc/systemd/system/", "/etc/cron", "/var/spool/cron/",
+      "/etc/rc.local", "/etc/profile.d/",
+      "/.config/systemd/user/", "/.config/autostart/",
+  ] },
+  { field = "path", op = "suffix", values = [
+      "/.bashrc", "/.zshrc", "/.profile", "/.bash_profile",
+      "/.bash_aliases", "/.zshenv",
+  ] },
+]
+
+[[rule]]
+id = "shell_outbound_connection"
+severity = "high"
+attack = ["T1059.004", "T1071"]
+on = "connect"
+message = "shell {path} connected out to {dst_ip}:{dst_port}"
+[rule.match]
+all = [
+  { field = "basename", op = "exact", values = ["sh", "bash", "zsh", "dash", "ash"] },
+]
+not = [
+  # loopback chatter between local processes is not C2
+  { field = "dst_ip", op = "prefix", values = ["127.", "::ffff:127.", "::1"] },
+]
+
+[[rule]]
+id = "writable_exec_then_outbound"
+severity = "critical"
+attack = ["T1059", "T1071", "T1204"]
+on = "connect"
+message = "{prior_path} connected out to {dst_ip}:{dst_port} {delay} after exec"
+correlate = { after = "exec_from_writable_dir", within = "30s", same_process = true }
+[rule.match]
+not = [
+  { field = "dst_ip", op = "prefix", values = ["127.", "::ffff:127.", "::1"] },
+]
