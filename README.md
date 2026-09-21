@@ -276,3 +276,11 @@ nazar.service    hardened systemd unit
 ```
 
 `nazar-common` is the wire format. Both sides reinterpret the same bytes, so any change there has to land on both ends in lockstep.
+
+---
+
+## License
+
+Userspace (`nazar-agent`, `nazar-common`) is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
+
+The kernel-side object (`nazar-ebpf`) declares `Dual MIT/GPL` in its ELF `license` section, and that declaration is load-bearing rather than ceremonial: the verifier refuses to load a program that calls a GPL-only helper unless the object claims a GPL-compatible license. `bpf_probe_read_kernel` and `bpf_probe_read_user_str` are both GPL-only, and the sensor cannot read a path or a `task_struct` field without them. [LICENSE-GPL2](LICENSE-GPL2) is included for that half.
