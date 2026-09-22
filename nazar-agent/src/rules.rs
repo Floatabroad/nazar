@@ -1,6 +1,7 @@
-use anyhow::{bail, Context, Result};
-use serde::{Serialize,Deserialize};
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
+
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
@@ -37,6 +38,7 @@ pub enum Field {
     Basename,
     AncestryPath,
     AncestryBasename,
+    Argv,
     Uid,
     DstIp,
     DstPort,
@@ -112,18 +114,52 @@ struct RuleFile {
     rule: Vec<Rule>,
 }
 
-pub fn load(path: &str) -> Result<Vec<Rule>> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading rules from {path}"))?;
-    let parsed: RuleFile =
-        toml::from_str(&text).with_context(|| format!("parsing {path}"))?;
+const PLACEHOLDERS: &[&str] = &[
+    "path",
+    "basename",
+    "argv",
+    "uid",
+    "dst_ip",
+    "dst_port",
+    "actor",
+    "prior_path",
+    "delay",
+];
 
+fn placeholders(message: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = message;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else { break };
+        out.push(&after[..close]);
+        rest = &after[close + 1..];
+    }
+    out
+}
+
+pub fn load(path: &str) -> Result<Vec<Rule>> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading rules from {path}"))?;
+    let parsed: RuleFile = toml::from_str(&text).with_context(|| format!("parsing {path}"))?;
+
+    let mut seen: HashSet<&str> = HashSet::new();
     for r in &parsed.rule {
+        if !seen.insert(r.id.as_str()) {
+            bail!("duplicate rule id {}", r.id);
+        }
         if let Some(c) = &r.correlate {
-            c.window()
-                .with_context(|| format!("rule {}", r.id))?;
+            c.window().with_context(|| format!("rule {}", r.id))?;
             if !parsed.rule.iter().any(|other| other.id == c.after) {
                 bail!("rule {} correlates after unknown rule {}", r.id, c.after);
+            }
+        }
+        for name in placeholders(&r.message) {
+            if !PLACEHOLDERS.contains(&name) {
+                bail!("rule {} uses unknown placeholder {{{}}}", r.id, name);
+            }
+            if r.correlate.is_none() && (name == "prior_path" || name == "delay") {
+                bail!("rule {} uses {{{}}} without a correlate block", r.id, name);
             }
         }
     }
@@ -134,6 +170,7 @@ pub struct EventFacts<'a> {
     pub kind: EventKind,
     pub path: &'a str,
     pub ancestry: &'a [String],
+    pub argv: &'a [String],
     pub uid: u32,
     pub dst_ip: &'a str,
     pub dst_port: u16,
@@ -165,13 +202,18 @@ impl Condition {
                 .values
                 .iter()
                 .any(|v| matches_str(self.op, facts.basename(), v)),
-            Field::AncestryPath => facts.ancestry.iter().any(|a| {
-                self.values.iter().any(|v| matches_str(self.op, a, v))
-            }),
+            Field::AncestryPath => facts
+                .ancestry
+                .iter()
+                .any(|a| self.values.iter().any(|v| matches_str(self.op, a, v))),
             Field::AncestryBasename => facts.ancestry.iter().any(|a| {
                 let base = a.rsplit('/').next().unwrap_or(a);
                 self.values.iter().any(|v| matches_str(self.op, base, v))
             }),
+            Field::Argv => facts
+                .argv
+                .iter()
+                .any(|a| self.values.iter().any(|v| matches_str(self.op, a, v))),
             Field::Uid => {
                 let uid = facts.uid.to_string();
                 self.values.iter().any(|v| matches_str(self.op, &uid, v))
@@ -213,6 +255,7 @@ impl Rule {
             .message
             .replace("{path}", facts.path)
             .replace("{basename}", facts.basename())
+            .replace("{argv}", &facts.argv.join(" "))
             .replace("{uid}", &facts.uid.to_string())
             .replace("{dst_ip}", facts.dst_ip)
             .replace("{dst_port}", &facts.dst_port.to_string());

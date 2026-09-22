@@ -45,7 +45,9 @@ With `NAZAR_JSON=1`, the same alert is emitted as one JSON object per line:
 
 ## Detection rules
 
-Rules live in `nazar-agent/rules.toml` and are loaded at startup. Rule order is precedence — the first match wins, so specific rules sit above general ones.
+Rules live in `nazar-agent/rules.toml` and are loaded at startup; `NAZAR_RULES` overrides the path. Rule order is precedence — the first match wins, so specific rules sit above general ones.
+
+Precedence governs what is *reported*, not what is *remembered*. Every rule that matched is written to the correlation history, and only the alert is narrowed to one. The distinction matters: `/tmp/.payload` matches both `hidden_file_exec` and `exec_from_writable_dir`, and if only the winner were remembered, a leading dot would silently disarm `writable_exec_then_outbound` — the loudest rule in the set.
 
 | Rule | Severity | ATT&CK | Trigger |
 |---|---|---|---|
@@ -80,12 +82,14 @@ not = [
 ]
 ```
 
-- **Fields:** `path`, `basename`, `ancestry_path`, `ancestry_basename`, `uid`, `dst_ip`, `dst_port`
+- **Fields:** `path`, `basename`, `ancestry_path`, `ancestry_basename`, `argv`, `uid`, `dst_ip`, `dst_port`
 - **Operators:** `prefix`, `suffix`, `contains`, `exact`
 - **Events:** `exec`, `write`, `connect`
 - **Correlation:** `correlate = { after = "<rule_id>", within = "30s", same_process = true }`
 
-Correlation targets and durations are validated at load, so a typo fails at startup rather than silently never firing.
+`same_process = true` looks for the prior hit only under the same `(tgid, start_time)`; `false` (the default) takes the most recent match from any process, which is what a "dropper writes it, another process runs it" chain needs.
+
+Correlation targets, durations, rule id uniqueness and `message` placeholders are all validated at load, so a typo fails at startup rather than silently never firing.
 
 ---
 
@@ -97,6 +101,8 @@ Requires `CONFIG_BPF_LSM=y` and `bpf` in the active LSM stack (`cat /sys/kernel/
 cp /bin/echo /tmp/blocked-test
 NAZAR_ENFORCE=1 NAZAR_DENY=/tmp/blocked-test ./target/debug/nazar-agent
 ```
+
+`NAZAR_DENY` takes a comma-separated list; paths of 256 bytes or more are skipped with a warning.
 
 ```
 $ /tmp/blocked-test hello
@@ -145,6 +151,18 @@ cargo install bpf-linker
 cargo build
 sudo ./target/debug/nazar-agent
 ```
+
+Run it from the repository root, or set `NAZAR_RULES` — the default rules path is relative.
+
+| variable | effect |
+|---|---|
+| `NAZAR_RULES` | path to the rule file (default `nazar-agent/rules.toml`, relative to the working directory) |
+| `NAZAR_JSON` | emit each alert as one JSON object per line instead of the rendered form |
+| `NAZAR_DEBUG` | also trace the raw event stream, and print drop and rate counters at exit |
+| `NAZAR_ENFORCE` | arm the LSM hook; without it the hook only observes |
+| `NAZAR_DENY` | comma-separated list of exact paths to deny when enforcing |
+
+Any value works; the agent only checks whether the variable is set.
 
 **The nightly is pinned deliberately.** `bpf-linker` has to agree with the LLVM version rustc emits bitcode for. A rolling nightly (LLVM 23.1.1 at the time of writing) produced bitcode `bpf-linker` couldn't parse — `ERROR llvm: Invalid record`. The pinned nightly carries LLVM 22.1.6, matching the system toolchain. `nazar-agent/build.rs` passes this toolchain explicitly via `Toolchain::Custom`.
 
@@ -233,6 +251,8 @@ No libc, so no `memset` and no `memmove`. Both showed up as link failures from i
 General rule: don't bulk-copy arrays or structs kernel-side.
 
 Related: event structs must be sized to what the kernel actually writes. `ExecEvent.comm` was declared `[u8; 256]` while `bpf_get_current_comm` writes 16 — the remaining 240 bytes were never initialised, so residue from earlier ring-buffer records leaked to userspace on every exec.
+
+The same uninitialised tail is a correctness problem, not just a hygiene one, wherever a whole buffer is used as a key. `bpf_ringbuf_reserve` hands back memory the kernel does not clear (aya types it as `MaybeUninit<T>`, which is the honest signature), and `bpf_probe_read_kernel_str` stops at the NUL rather than padding. The LSM hook then looks the path up in `EXEC_DENYLIST` using all 256 bytes, while userspace inserts a zero-padded key — so whatever the previous record left after the NUL decides whether enforcement fires. The tail is zeroed explicitly before the lookup. Everywhere else the tail is harmless, because every consumer stops at the NUL or respects `args_len`, and zeroing 2 KiB of `args` on the hottest path would cost more than it buys.
 
 ### Verifier notes
 

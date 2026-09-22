@@ -1,15 +1,22 @@
-use aya::{programs::{CgroupSockAddr, CgroupAttachMode},maps::RingBuf, programs::TracePoint};
+use aya::{
+    maps::RingBuf,
+    programs::{CgroupAttachMode, CgroupSockAddr, TracePoint},
+};
 use log::debug;
 use nazar_common::{
-    ConnectEvent, EventHeader, ExecEvent, ExitEvent, ForkEvent, OpenEvent, ProcExecEvent,
-    ARGS_LEN, EVENT_CONNECT, EVENT_EXEC, EVENT_EXIT, EVENT_FORK, EVENT_OPEN, EVENT_PROC_EXEC, LsmExecEvent, EVENT_LSM_EXEC
+    ARGS_LEN, ConnectEvent, EVENT_CONNECT, EVENT_EXEC, EVENT_EXIT, EVENT_FORK, EVENT_LSM_EXEC,
+    EVENT_OPEN, EVENT_PROC_EXEC, EventHeader, ExecEvent, ExitEvent, ForkEvent, LsmExecEvent,
+    OpenEvent, ProcExecEvent,
 };
 use tokio::{io::unix::AsyncFd, signal};
 mod btf;
 mod proc_table;
+
+const AF_INET6: u32 = 10;
+
 use proc_table::{ProcKey, ProcTable};
-mod procfs;
 mod detect;
+mod procfs;
 use detect::Engine;
 mod rules;
 #[tokio::main]
@@ -20,26 +27,31 @@ async fn main() -> anyhow::Result<()> {
         rlim_cur: libc::RLIM_INFINITY,
         rlim_max: libc::RLIM_INFINITY,
     };
-    let ret = unsafe  { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim)};
+    let ret = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim) };
     if ret != 0 {
         debug!("remove limit on locked memory failed, ret is: {ret}");
     }
     let mut ebpf = aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
-                env!("OUT_DIR"),
-                "/nazar-agent"
-                )))?;
+        env!("OUT_DIR"),
+        "/nazar-agent"
+    )))?;
     {
         use aya::maps::Array;
         let mut offsets: Array<_, u32> = Array::try_from(ebpf.map_mut("OFFSETS").unwrap())?;
-        let start_boottime = btf::kernel_field_offset("task_struct", "start_boottime")?;
+        let vmlinux = btf::Btf::from_sys_fs()?;
+        let start_boottime = vmlinux.field_offset("task_struct", "start_boottime")?;
         offsets.set(0, start_boottime, 0)?;
         println!("task_struct.start_boottime @ byte {start_boottime}");
         offsets.set(1, std::process::id(), 0)?;
-                let bprm_filename = btf::kernel_field_offset("linux_binprm", "filename")?;
+        let bprm_filename = vmlinux.field_offset("linux_binprm", "filename")?;
         offsets.set(2, bprm_filename, 0)?;
         println!("linux_binprm.filename @ byte {bprm_filename}");
 
-        let enforce = if std::env::var("NAZAR_ENFORCE").is_ok() { 1u32 } else { 0 };
+        let enforce = if std::env::var("NAZAR_ENFORCE").is_ok() {
+            1u32
+        } else {
+            0
+        };
         offsets.set(3, enforce, 0)?;
         if enforce != 0 {
             println!("ENFORCEMENT ENABLED");
@@ -64,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
-        {
+    {
         let p: &mut TracePoint = ebpf.program_mut("nazar").unwrap().try_into()?;
         p.load()?;
         p.attach("syscalls", "sys_enter_execve")?;
@@ -103,13 +115,10 @@ async fn main() -> anyhow::Result<()> {
     }
     {
         let btf = aya::Btf::from_sys_fs()?;
-        let p: &mut aya::programs::Lsm =
-            ebpf.program_mut("nazar_bprm").unwrap().try_into()?;
+        let p: &mut aya::programs::Lsm = ebpf.program_mut("nazar_bprm").unwrap().try_into()?;
         p.load("bprm_check_security", &btf)?;
         p.attach()?;
     }
-
-    
 
     let ring = RingBuf::try_from(ebpf.take_map("EVENTS").unwrap())?;
     let mut ring = AsyncFd::new(ring)?;
@@ -124,20 +133,18 @@ async fn main() -> anyhow::Result<()> {
         }
         Err(e) => eprintln!("failed to seed from /proc: {e}"),
     }
-        let mut open_count: u64 = 0;
+    let mut open_count: u64 = 0;
     let started = std::time::Instant::now();
-        let json_output = std::env::var("NAZAR_JSON").is_ok();
-            let debug_events = std::env::var("NAZAR_DEBUG").is_ok();
-        let rules_path = std::env::var("NAZAR_RULES")
-        .unwrap_or_else(|_| "nazar-agent/rules.toml".to_string());
+    let json_output = std::env::var("NAZAR_JSON").is_ok();
+    let debug_events = std::env::var("NAZAR_DEBUG").is_ok();
+    let rules_path =
+        std::env::var("NAZAR_RULES").unwrap_or_else(|_| "nazar-agent/rules.toml".to_string());
     let mut engine = Engine::load(&rules_path)?;
     println!("loaded {} detection rules", engine.rule_count());
-        let mut expiry = tokio::time::interval(std::time::Duration::from_secs(10));
-            let mut sigterm = tokio::signal::unix::signal(
-        tokio::signal::unix::SignalKind::terminate()
-    )?;
+    let mut expiry = tokio::time::interval(std::time::Duration::from_secs(10));
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     loop {
-        tokio::select!{
+        tokio::select! {
             _ = signal::ctrl_c() => break,
             _ = sigterm.recv() => break,
             _ = expiry.tick() => {
@@ -170,14 +177,14 @@ async fn main() -> anyhow::Result<()> {
                                 .filter(|s| !s.is_empty())
                                 .map(|s| core::str::from_utf8(s).unwrap_or("<invalid>"))
                                 .collect();
-                                
+
                                                         let key = ProcKey {
                                 tgid: event.header.tgid,
                                 start_time: event.header.start_time,
                             };
                             let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
                             table.on_exec(key, cstr(&event.comm), event.uid, argv);
-    
+
                             }
                         EVENT_PROC_EXEC => {
                             if bytes.len() < core::mem::size_of::<ProcExecEvent>() {
@@ -186,12 +193,12 @@ async fn main() -> anyhow::Result<()> {
                             let event: ProcExecEvent = unsafe {
                                 core::ptr::read_unaligned(bytes.as_ptr() as *const ProcExecEvent)
                             };
-                                                                                   
+
                                                                    let key = ProcKey {
                                 tgid: event.header.tgid,
                                 start_time: event.header.start_time,
                             };
-                                                      
+
 
                                                         if let Some(alert) = engine.on_exec(&table, key, cstr(&event.filename)) {
                                 emit(&alert, json_output);
@@ -254,7 +261,7 @@ async fn main() -> anyhow::Result<()> {
                                 core::ptr::read_unaligned(bytes.as_ptr() as *const ConnectEvent)
                             };
                             let port = u16::from_be(event.port as u16);
-                            let addr = if event.family == 10 {
+                            let addr = if event.family == AF_INET6 {
                                 let mut b = [0u8; 16];
                                 for (i, w) in event.addr.iter().enumerate() {
                                     b[i*4..i*4+4].copy_from_slice(&w.to_ne_bytes());
@@ -311,13 +318,16 @@ async fn main() -> anyhow::Result<()> {
             println!("drained {drained} events on shutdown");
         }
     }
-        if debug_events {
+    if debug_events {
         let secs = started.elapsed().as_secs_f64();
-        println!("openat: {} events in {:.1}s = {:.0}/sec", open_count, secs, open_count as f64 / secs);
-    
-    
-        }
-        {
+        println!(
+            "openat: {} events in {:.1}s = {:.0}/sec",
+            open_count,
+            secs,
+            open_count as f64 / secs
+        );
+    }
+    {
         use aya::maps::Array;
         let stats: Array<_, u64> = Array::try_from(ebpf.map("STATS").unwrap())?;
         let dropped = stats.get(&0, 0).unwrap_or(0);

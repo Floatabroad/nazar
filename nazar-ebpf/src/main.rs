@@ -1,11 +1,15 @@
 #![no_std]
 #![no_main]
-use nazar_common::{ExecEvent, ARG_LEN,ARGS_LEN, MAX_ARGS, EVENT_EXEC, ProcExecEvent, EVENT_PROC_EXEC, ForkEvent, ExitEvent, EVENT_FORK, EVENT_EXIT, OpenEvent, EVENT_OPEN,ConnectEvent, EVENT_CONNECT,LsmExecEvent,EVENT_LSM_EXEC};
 use aya_ebpf::{
-    macros::{cgroup_sock_addr,map,tracepoint, lsm},
-    maps::{Array,RingBuf, HashMap as BpfHashMap},
-    programs::{TracePointContext, SockAddrContext, LsmContext},
     EbpfContext,
+    macros::{cgroup_sock_addr, lsm, map, tracepoint},
+    maps::{Array, HashMap as BpfHashMap, RingBuf},
+    programs::{LsmContext, SockAddrContext, TracePointContext},
+};
+use nazar_common::{
+    ARG_LEN, ARGS_LEN, ConnectEvent, EVENT_CONNECT, EVENT_EXEC, EVENT_EXIT, EVENT_FORK,
+    EVENT_LSM_EXEC, EVENT_OPEN, EVENT_PROC_EXEC, ExecEvent, ExitEvent, ForkEvent, LsmExecEvent,
+    MAX_ARGS, OpenEvent, ProcExecEvent,
 };
 
 const OFF_START_BOOTTIME: u32 = 0;
@@ -19,10 +23,8 @@ const WRITE_FLAGS: u32 = O_WRONLY | O_RDWR | O_CREAT | O_TRUNC;
 const OFF_BPRM_FILENAME: u32 = 2;
 const CFG_ENFORCE: u32 = 3;
 
-
 #[map]
-static EXEC_DENYLIST: BpfHashMap<[u8; 256], u8> =
-    BpfHashMap::with_max_entries(64, 0);
+static EXEC_DENYLIST: BpfHashMap<[u8; 256], u8> = BpfHashMap::with_max_entries(64, 0);
 
 #[map]
 static EVENTS: RingBuf = RingBuf::with_byte_size(1 << 20, 0);
@@ -74,7 +76,7 @@ fn emit_connect(ctx: &SockAddrContext, addr: [u32; 4]) {
         }
     }
 
-        let Some(mut entry) = EVENTS.reserve::<ConnectEvent>(0) else {
+    let Some(mut entry) = EVENTS.reserve::<ConnectEvent>(0) else {
         bump(STAT_RINGBUF_FULL);
         return;
     };
@@ -85,9 +87,7 @@ fn emit_connect(ctx: &SockAddrContext, addr: [u32; 4]) {
         (&raw mut (*ptr).header.tgid).write(tgid);
         (&raw mut (*ptr).header.pid).write(pid_tgid as u32);
         (&raw mut (*ptr).header._pad).write(0);
-        (&raw mut (*ptr).header.timestamp).write(
-            aya_ebpf::helpers::bpf_ktime_get_ns()
-        );
+        (&raw mut (*ptr).header.timestamp).write(aya_ebpf::helpers::bpf_ktime_get_ns());
         (&raw mut (*ptr).header.start_time).write(current_start_time());
 
         (&raw mut (*ptr).family).write((*sa).family);
@@ -116,14 +116,14 @@ fn try_nazar(ctx: TracePointContext) -> Result<u32, u32> {
     let pid_tgid = aya_ebpf::helpers::bpf_get_current_pid_tgid();
     let tgid = (pid_tgid >> 32) as u32;
     let pid = pid_tgid as u32;
-    
-    let uid_gid = unsafe { aya_ebpf::helpers::generated::bpf_get_current_uid_gid()};
+
+    let uid_gid = unsafe { aya_ebpf::helpers::generated::bpf_get_current_uid_gid() };
     let gid = (uid_gid >> 32) as u32;
     let uid = uid_gid as u32;
-    
-    let filename_ptr: u64 = unsafe {ctx.read_at(16).map_err(|_| 1u32)?};
 
-        let mut entry = match EVENTS.reserve::<ExecEvent>(0) {
+    let filename_ptr: u64 = unsafe { ctx.read_at(16).map_err(|_| 1u32)? };
+
+    let mut entry = match EVENTS.reserve::<ExecEvent>(0) {
         Some(entry) => entry,
         None => {
             bump(STAT_RINGBUF_FULL);
@@ -134,24 +134,18 @@ fn try_nazar(ctx: TracePointContext) -> Result<u32, u32> {
     let ptr = entry.as_mut_ptr();
 
     unsafe {
-
         (&raw mut (*ptr).header.kind).write(EVENT_EXEC);
         (&raw mut (*ptr).header.tgid).write(tgid);
         (&raw mut (*ptr).header.pid).write(pid);
         (&raw mut (*ptr).header._pad).write(0);
-        
-        (&raw mut (*ptr).header.timestamp).write(
-            aya_ebpf::helpers::bpf_ktime_get_ns()
-        );
+
+        (&raw mut (*ptr).header.timestamp).write(aya_ebpf::helpers::bpf_ktime_get_ns());
         (&raw mut (*ptr).header.start_time).write(current_start_time());
         (&raw mut (*ptr).uid).write(uid);
         (&raw mut (*ptr).gid).write(gid);
 
-
-        let ret = aya_ebpf::helpers::generated::bpf_get_current_comm(
-            (&raw mut (*ptr).comm).cast(),
-            16,
-        );
+        let ret =
+            aya_ebpf::helpers::generated::bpf_get_current_comm((&raw mut (*ptr).comm).cast(), 16);
         if ret != 0 {
             entry.discard(0);
             return Err(1);
@@ -160,10 +154,10 @@ fn try_nazar(ctx: TracePointContext) -> Result<u32, u32> {
             (&raw mut (*ptr).filename).cast(),
             256,
             filename_ptr as *const _,
-            );
-            if ret < 0 {
-                entry.discard(0);
-                return Err(1);
+        );
+        if ret < 0 {
+            entry.discard(0);
+            return Err(1);
         }
         let argv_ptr: u64 = match ctx.read_at(24) {
             Ok(v) => v,
@@ -174,20 +168,20 @@ fn try_nazar(ctx: TracePointContext) -> Result<u32, u32> {
         };
         let mut argc: u32 = 0;
         let mut cursor: usize = 0;
-        
+
         for i in 0..MAX_ARGS {
             let mut arg_ptr: u64 = 0;
             let ret = aya_ebpf::helpers::generated::bpf_probe_read_user(
                 (&raw mut arg_ptr).cast(),
                 8,
-                (argv_ptr as *const u8).add(i*8) as *const _,
-                );
-            if ret < 0 || arg_ptr == 0{
+                (argv_ptr as *const u8).add(i * 8) as *const _,
+            );
+            if ret < 0 || arg_ptr == 0 {
                 break;
             }
             if cursor + ARG_LEN > ARGS_LEN {
                 break;
-            } 
+            }
             let off = cursor & (ARGS_LEN - 1);
             let dst = (&raw mut (*ptr).args).cast::<u8>().add(off);
 
@@ -195,7 +189,7 @@ fn try_nazar(ctx: TracePointContext) -> Result<u32, u32> {
                 dst.cast(),
                 ARG_LEN as u32,
                 arg_ptr as *const _,
-                );
+            );
             if ret <= 0 {
                 break;
             }
@@ -203,13 +197,8 @@ fn try_nazar(ctx: TracePointContext) -> Result<u32, u32> {
             argc += 1;
         }
 
-        
-
         (&raw mut (*ptr).argc).write(argc);
         (&raw mut (*ptr).args_len).write(cursor as u32);
-
-
-        
     }
 
     entry.submit(0);
@@ -233,7 +222,6 @@ fn try_proc_exec(ctx: TracePointContext) -> Result<u32, u32> {
     let filename_off = (data_loc & 0xFFFF) as usize;
     let old_pid: u32 = unsafe { ctx.read_at(16).map_err(|_| 1u32)? };
 
-    
     let mut entry = match EVENTS.reserve::<ProcExecEvent>(0) {
         Some(entry) => entry,
         None => {
@@ -248,14 +236,12 @@ fn try_proc_exec(ctx: TracePointContext) -> Result<u32, u32> {
         (&raw mut (*ptr).header.tgid).write(tgid);
         (&raw mut (*ptr).header.pid).write(pid);
         (&raw mut (*ptr).header._pad).write(0);
-        (&raw mut (*ptr).header.timestamp).write(
-            aya_ebpf::helpers::bpf_ktime_get_ns()
-        );
-                (&raw mut (*ptr).header.start_time).write(current_start_time());
+        (&raw mut (*ptr).header.timestamp).write(aya_ebpf::helpers::bpf_ktime_get_ns());
+        (&raw mut (*ptr).header.start_time).write(current_start_time());
         (&raw mut (*ptr).old_pid).write(old_pid);
-        (&raw mut (*ptr).data_loc_raw).write(data_loc); 
-             
-                let src = ctx.as_ptr().cast::<u8>().add(filename_off);
+        (&raw mut (*ptr).data_loc_raw).write(data_loc);
+
+        let src = ctx.as_ptr().cast::<u8>().add(filename_off);
         let ret = aya_ebpf::helpers::generated::bpf_probe_read_kernel_str(
             (&raw mut (*ptr).filename).cast(),
             256,
@@ -280,11 +266,11 @@ pub fn nazar_fork(ctx: TracePointContext) -> u32 {
 }
 
 fn try_fork(ctx: TracePointContext) -> Result<u32, u32> {
-    let parent_pid: u32 = unsafe {ctx.read_at(12).map_err(|_| 1u32)?};
-    let child_pid: u32 = unsafe {ctx.read_at(20).map_err(|_| 1u32)?};
+    let parent_pid: u32 = unsafe { ctx.read_at(12).map_err(|_| 1u32)? };
+    let child_pid: u32 = unsafe { ctx.read_at(20).map_err(|_| 1u32)? };
 
     let pid_tgid = aya_ebpf::helpers::bpf_get_current_pid_tgid();
-        let mut entry = match EVENTS.reserve::<ForkEvent>(0) {
+    let mut entry = match EVENTS.reserve::<ForkEvent>(0) {
         Some(entry) => entry,
         None => {
             bump(STAT_RINGBUF_FULL);
@@ -294,20 +280,18 @@ fn try_fork(ctx: TracePointContext) -> Result<u32, u32> {
     let ptr = entry.as_mut_ptr();
 
     unsafe {
-         (&raw mut (*ptr).header.kind).write(EVENT_FORK);
+        (&raw mut (*ptr).header.kind).write(EVENT_FORK);
         (&raw mut (*ptr).header.tgid).write((pid_tgid >> 32) as u32);
         (&raw mut (*ptr).header.pid).write(pid_tgid as u32);
         (&raw mut (*ptr).header._pad).write(0);
-        (&raw mut (*ptr).header.timestamp).write(
-            aya_ebpf::helpers::bpf_ktime_get_ns()
-        );
+        (&raw mut (*ptr).header.timestamp).write(aya_ebpf::helpers::bpf_ktime_get_ns());
         (&raw mut (*ptr).header.start_time).write(current_start_time());
         (&raw mut (*ptr).parent_pid).write(parent_pid);
         (&raw mut (*ptr).child_pid).write(child_pid);
     }
     entry.submit(0);
     Ok(0)
-} 
+}
 #[tracepoint]
 pub fn nazar_exit(ctx: TracePointContext) -> u32 {
     match try_exit(ctx) {
@@ -317,12 +301,12 @@ pub fn nazar_exit(ctx: TracePointContext) -> u32 {
 }
 
 fn try_exit(ctx: TracePointContext) -> Result<u32, u32> {
-     let exiting_pid: u32 = unsafe { ctx.read_at(24).map_err(|_| 1u32)? };
+    let exiting_pid: u32 = unsafe { ctx.read_at(24).map_err(|_| 1u32)? };
     let group_dead: u8 = unsafe { ctx.read_at(32).map_err(|_| 1u32)? };
 
     let pid_tgid = aya_ebpf::helpers::bpf_get_current_pid_tgid();
 
-     let mut entry = match EVENTS.reserve::<ExitEvent>(0) {
+    let mut entry = match EVENTS.reserve::<ExitEvent>(0) {
         Some(entry) => entry,
         None => {
             bump(STAT_RINGBUF_FULL);
@@ -336,10 +320,8 @@ fn try_exit(ctx: TracePointContext) -> Result<u32, u32> {
         (&raw mut (*ptr).header.tgid).write((pid_tgid >> 32) as u32);
         (&raw mut (*ptr).header.pid).write(pid_tgid as u32);
         (&raw mut (*ptr).header._pad).write(0);
-        (&raw mut (*ptr).header.timestamp).write(
-            aya_ebpf::helpers::bpf_ktime_get_ns()
-        );
-                (&raw mut (*ptr).header.start_time).write(current_start_time());
+        (&raw mut (*ptr).header.timestamp).write(aya_ebpf::helpers::bpf_ktime_get_ns());
+        (&raw mut (*ptr).header.start_time).write(current_start_time());
         (&raw mut (*ptr).exiting_pid).write(exiting_pid);
         (&raw mut (*ptr).group_dead).write(group_dead as u32);
 
@@ -381,7 +363,6 @@ fn current_start_time() -> u64 {
     if ret < 0 { 0 } else { out }
 }
 
-
 #[tracepoint]
 pub fn nazar_open(ctx: TracePointContext) -> u32 {
     match try_open(ctx) {
@@ -409,7 +390,7 @@ fn try_open(ctx: TracePointContext) -> Result<u32, u32> {
 
     let filename_ptr: u64 = unsafe { ctx.read_at(24).map_err(|_| 1u32)? };
 
-       let mut entry = match EVENTS.reserve::<OpenEvent>(0) {
+    let mut entry = match EVENTS.reserve::<OpenEvent>(0) {
         Some(entry) => entry,
         None => {
             bump(STAT_RINGBUF_FULL);
@@ -423,9 +404,7 @@ fn try_open(ctx: TracePointContext) -> Result<u32, u32> {
         (&raw mut (*ptr).header.tgid).write((pid_tgid >> 32) as u32);
         (&raw mut (*ptr).header.pid).write(pid_tgid as u32);
         (&raw mut (*ptr).header._pad).write(0);
-        (&raw mut (*ptr).header.timestamp).write(
-            aya_ebpf::helpers::bpf_ktime_get_ns()
-        );
+        (&raw mut (*ptr).header.timestamp).write(aya_ebpf::helpers::bpf_ktime_get_ns());
         (&raw mut (*ptr).header.start_time).write(current_start_time());
         (&raw mut (*ptr).flags).write(flags as u32);
         (&raw mut (*ptr)._pad2).write(0);
@@ -447,14 +426,13 @@ fn try_open(ctx: TracePointContext) -> Result<u32, u32> {
 
 #[cfg(not(test))]
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo)-> ! {
-    loop{}
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
 }
 
 #[unsafe(link_section = "license")]
 #[unsafe(no_mangle)]
 static LICENSE: [u8; 13] = *b"Dual MIT/GPL\0";
-
 
 #[lsm(hook = "bprm_check_security")]
 pub fn nazar_bprm(ctx: LsmContext) -> i32 {
@@ -505,9 +483,7 @@ fn try_bprm(ctx: &LsmContext) -> Result<i32, i32> {
         (&raw mut (*ptr).header.tgid).write((pid_tgid >> 32) as u32);
         (&raw mut (*ptr).header.pid).write(pid_tgid as u32);
         (&raw mut (*ptr).header._pad).write(0);
-        (&raw mut (*ptr).header.timestamp).write(
-            aya_ebpf::helpers::bpf_ktime_get_ns()
-        );
+        (&raw mut (*ptr).header.timestamp).write(aya_ebpf::helpers::bpf_ktime_get_ns());
         (&raw mut (*ptr).header.start_time).write(current_start_time());
         (&raw mut (*ptr)._pad2).write(0);
 
@@ -521,14 +497,17 @@ fn try_bprm(ctx: &LsmContext) -> Result<i32, i32> {
             return Ok(0);
         }
 
-        let enforcing = OFFSETS
-            .get(CFG_ENFORCE)
-            .map(|v| *v != 0)
-            .unwrap_or(false);
+        let written = n as usize;
+        let dst = (&raw mut (*ptr).filename).cast::<u8>();
+        for i in 0..256usize {
+            if i >= written {
+                dst.add(i & 255).write(0);
+            }
+        }
 
-        let listed = EXEC_DENYLIST
-            .get(&*(&raw const (*ptr).filename))
-            .is_some();
+        let enforcing = OFFSETS.get(CFG_ENFORCE).map(|v| *v != 0).unwrap_or(false);
+
+        let listed = EXEC_DENYLIST.get(&*(&raw const (*ptr).filename)).is_some();
 
         let blocked = if enforcing && listed { 1u32 } else { 0u32 };
         (&raw mut (*ptr).blocked).write(blocked);
@@ -537,9 +516,5 @@ fn try_bprm(ctx: &LsmContext) -> Result<i32, i32> {
 
     entry.submit(0);
 
-    if decision != 0 {
-        Ok(-1)
-    } else {
-        Ok(0)
-    }
+    if decision != 0 { Ok(-1) } else { Ok(0) }
 }

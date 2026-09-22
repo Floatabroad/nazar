@@ -1,5 +1,7 @@
-use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::{
+    collections::{HashMap, HashSet},
+    time::Instant,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ProcKey {
@@ -50,7 +52,10 @@ impl ProcTable {
     }
 
     pub fn on_fork(&mut self, parent_tgid: u32, _parent_start: u64, child_tgid: u32) {
-        let child_key = ProcKey { tgid: child_tgid, start_time: 0 };
+        let child_key = ProcKey {
+            tgid: child_tgid,
+            start_time: 0,
+        };
         let mut node = ProcNode::new(child_key);
 
         if let Some(&parent_key) = self.by_tgid.get(&parent_tgid) {
@@ -59,7 +64,6 @@ impl ProcTable {
                 parent.children.insert(child_key);
             }
         }
-
 
         if let Some(parent) = node.parent.and_then(|k| self.nodes.get(&k)) {
             node.comm = parent.comm.clone();
@@ -70,13 +74,15 @@ impl ProcTable {
         self.by_tgid.insert(child_tgid, child_key);
     }
 
-           fn ensure(&mut self, key: ProcKey) -> &mut ProcNode {
+    fn ensure(&mut self, key: ProcKey) -> &mut ProcNode {
         if self.nodes.contains_key(&key) {
             return self.nodes.get_mut(&key).unwrap();
         }
 
-
-        let placeholder = ProcKey { tgid: key.tgid, start_time: 0 };
+        let placeholder = ProcKey {
+            tgid: key.tgid,
+            start_time: 0,
+        };
         if key.start_time != 0 {
             if let Some(mut node) = self.nodes.remove(&placeholder) {
                 if let Some(pk) = node.parent {
@@ -98,7 +104,6 @@ impl ProcTable {
                 return self.nodes.get_mut(&key).unwrap();
             }
         }
-
 
         let mut node = ProcNode::new(key);
         if let Some(ptgid) = self.pending_parent.remove(&key.tgid) {
@@ -126,14 +131,17 @@ impl ProcTable {
         node.exe = exe.to_string();
     }
 
-       pub fn on_exit(&mut self, key: ProcKey, group_dead: bool) {
+    pub fn on_exit(&mut self, key: ProcKey, group_dead: bool) {
         if !group_dead {
             return;
         }
         let target = if self.nodes.contains_key(&key) {
             key
         } else {
-            ProcKey { tgid: key.tgid, start_time: 0 }
+            ProcKey {
+                tgid: key.tgid,
+                start_time: 0,
+            }
         };
         if let Some(node) = self.nodes.get_mut(&target) {
             node.exited_at = Some(Instant::now());
@@ -149,8 +157,7 @@ impl ProcTable {
         self.nodes.get(alt)
     }
 
-    
-       pub fn ancestry(&self, key: ProcKey) -> Vec<&ProcNode> {
+    pub fn ancestry(&self, key: ProcKey) -> Vec<&ProcNode> {
         let mut out = Vec::new();
         let start = self.resolve(&key).and_then(|n| n.parent);
         let mut cur = start;
@@ -166,21 +173,15 @@ impl ProcTable {
         out
     }
 
-    pub fn get(&self, key: &ProcKey) -> Option<&ProcNode> {
-        self.nodes.get(key)
-    }
-
-    pub fn len(&self) -> usize {
-        self.nodes.len()
-    }
-
     pub fn reap(&mut self, grace: std::time::Duration) {
         let now = Instant::now();
         let dead: Vec<ProcKey> = self
             .nodes
             .values()
             .filter(|n| {
-                n.exited_at.map(|t| now.duration_since(t) > grace).unwrap_or(false)
+                n.exited_at
+                    .map(|t| now.duration_since(t) > grace)
+                    .unwrap_or(false)
                     && n.children.is_empty()
             })
             .map(|n| n.key)
@@ -198,7 +199,10 @@ impl ProcTable {
     }
     pub fn seed(&mut self, procs: Vec<crate::procfs::ProcInfo>) {
         for p in &procs {
-            let key = ProcKey { tgid: p.tgid, start_time: p.start_time_ns };
+            let key = ProcKey {
+                tgid: p.tgid,
+                start_time: p.start_time_ns,
+            };
             let mut node = ProcNode::new(key);
             node.comm = p.comm.clone();
             node.exe = p.exe.clone();
@@ -209,8 +213,12 @@ impl ProcTable {
         }
 
         for p in &procs {
-            let Some(&child_key) = self.by_tgid.get(&p.tgid) else { continue };
-            let Some(&parent_key) = self.by_tgid.get(&p.ppid) else { continue };
+            let Some(&child_key) = self.by_tgid.get(&p.tgid) else {
+                continue;
+            };
+            let Some(&parent_key) = self.by_tgid.get(&p.ppid) else {
+                continue;
+            };
             if let Some(node) = self.nodes.get_mut(&child_key) {
                 node.parent = Some(parent_key);
             }

@@ -5,9 +5,11 @@
 # `any` must hold (when `any` is non-empty), and no condition in `not`
 # may hold.
 #
-# Placeholders available in `message`: {path} {basename} {uid}
+# Placeholders available in `message`: {path} {basename} {argv} {uid}
 # {dst_ip} {dst_port}, plus {actor} and, for correlated rules,
-# {prior_path} and {delay}.
+# {prior_path} and {delay}. An unknown placeholder, a duplicate rule
+# id and a correlation target that does not exist are all rejected at
+# startup.
 
 [[rule]]
 id = "hidden_file_exec"

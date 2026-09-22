@@ -1,5 +1,6 @@
-use anyhow::Result;
 use std::fs;
+
+use anyhow::Result;
 
 pub struct ProcInfo {
     pub tgid: u32,
@@ -59,7 +60,9 @@ pub fn snapshot() -> Result<Vec<ProcInfo>> {
         let Ok(entry) = entry else { continue };
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        let Ok(pid) = name.parse::<u32>() else { continue };
+        let Ok(pid) = name.parse::<u32>() else {
+            continue;
+        };
 
         let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
             continue;

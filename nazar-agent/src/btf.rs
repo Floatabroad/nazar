@@ -1,5 +1,6 @@
-use anyhow::{anyhow, bail, Result};
 use std::fs;
+
+use anyhow::{Result, anyhow, bail};
 
 const BTF_MAGIC: u16 = 0xeB9F;
 const BTF_KIND_STRUCT: u32 = 4;
@@ -35,7 +36,7 @@ fn extra_len(kind: u32, vlen: u32) -> Result<usize> {
 
 #[derive(Debug)]
 struct BtfHeader {
-    type_off:u32,
+    type_off: u32,
     type_len: u32,
     str_off: u32,
     str_len: u32,
@@ -59,7 +60,7 @@ fn read_u32(buf: &[u8], off: usize) -> Result<u32> {
 fn parse_header(buf: &[u8]) -> Result<BtfHeader> {
     let magic = read_u16(buf, 0)?;
     if magic != BTF_MAGIC {
-        bail!("bad BTF magic: 0{magic:04x}");
+        bail!("bad BTF magic: 0x{magic:04x}");
     }
     let version = buf.get(2).copied().ok_or_else(|| anyhow!("truncated"))?;
     if version != 1 {
@@ -74,19 +75,17 @@ fn parse_header(buf: &[u8]) -> Result<BtfHeader> {
     })
 }
 
-
-
-struct Btf {
+pub struct Btf {
     data: Vec<u8>,
     hdr: BtfHeader,
 }
 
 impl Btf {
-    fn field_offset(&self, struct_name: &str, field: &str) -> Result<u32> {
+    pub fn field_offset(&self, struct_name: &str, field: &str) -> Result<u32> {
         let found = self.walk_types(|entry| {
             if entry.kind != BTF_KIND_STRUCT && entry.kind != BTF_KIND_UNION {
                 return Ok(None);
-            } 
+            }
             if self.name_at(entry.name_off)? != struct_name {
                 return Ok(None);
             }
@@ -97,17 +96,24 @@ impl Btf {
                     continue;
                 }
                 let raw = read_u32(&self.data, m + 8)?;
-                let bit_off = if entry.kind_flag { raw & 0x00ff_ffff } else {raw };
+                let bit_off = if entry.kind_flag {
+                    raw & 0x00ff_ffff
+                } else {
+                    raw
+                };
                 if bit_off % 8 != 0 {
-                                        bail!("{struct_name}.{field} is a bitfield (bit offset {bit_off})");
+                    bail!("{struct_name}.{field} is a bitfield (bit offset {bit_off})");
                 }
                 return Ok(Some(bit_off / 8));
             }
-                        bail!("{struct_name} has no field {field}");
+            bail!("{struct_name} has no field {field}");
         })?;
         found.ok_or_else(|| anyhow!("struct {struct_name} not found in BTF"))
     }
-    fn walk_types<T>(&self, mut f: impl FnMut(&TypeEntry) -> Result<Option<T>>) -> Result<Option<T>> {
+    fn walk_types<T>(
+        &self,
+        mut f: impl FnMut(&TypeEntry) -> Result<Option<T>>,
+    ) -> Result<Option<T>> {
         let mut off = self.types_start();
         let end = self.types_end();
 
@@ -135,10 +141,10 @@ impl Btf {
         }
         Ok(None)
     }
-    fn from_sys_fs() -> Result<Self> {
+    pub fn from_sys_fs() -> Result<Self> {
         let data = fs::read("/sys/kernel/btf/vmlinux")?;
         let hdr = parse_header(&data)?;
-        Ok(Btf {data, hdr})
+        Ok(Btf { data, hdr })
     }
     fn types_start(&self) -> usize {
         self.hdr.hdr_len as usize + self.hdr.type_off as usize
@@ -162,9 +168,5 @@ impl Btf {
             .position(|&b| b == 0)
             .ok_or_else(|| anyhow!("unterminated string at {name_off}"))?;
         Ok(std::str::from_utf8(&slice[..nul])?)
-
     }
-}
-pub fn kernel_field_offset(struct_name: &str, field: &str) -> Result<u32> {
-    Btf::from_sys_fs()?.field_offset(struct_name, field)
 }
